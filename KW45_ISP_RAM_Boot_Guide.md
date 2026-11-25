@@ -1,4 +1,4 @@
-# KW45 ISP Mode 下载程序到 RAM 运行操作手册
+# KW45 RAM 下载与调试手册（CAN ISP / J-Link）
 
 ## 1. 核心结论与技术要点
 
@@ -131,3 +131,93 @@ blhost -cb "pcan,PCAN_USBBUS1" execute 0x3000847D 0x30008000 0x30018000
 | `write-memory` 返回 `10200 (0x27d8) MemoryRangeInvalid` | 写入地址落在了 ROM 占用的保留区 (`0x20000000 - 0x20003FFF` / `0x30000000 - 0x30003FFF`) | 将链接脚本起始地址设在保留区之后（如 `0x30008000`） |
 | `execute` 返回 `0 (0x0) Success` 但进入 `BusFault` (`CFSR = 0x8200`) | 访问了未初始化硬件 ECC 的 SRAM 区域（如高地址 `STCM` 堆栈区） | 在 `startup_KW45B41Z83.S` 的 `Reset_Handler` 中先用 `stmia r0!, {r2 - r5}` 对 `m_data1` 区域进行 128-bit 对齐清零以初始化 ECC |
 | 跳转后立即卡死在 `DefaultISR` | ROM Bootloader 在 ISP 期间开启的外设中断（如 `CAN0`）未关闭，启动代码执行 `cpsie i` 后立即触发未知中断 | 在 `SystemInit()` 入口清零 `SysTick->CTRL` 并向 `NVIC->ICER[0..7]` 和 `NVIC->ICPR[0..7]` 写 `0xFFFFFFFF` |
+
+---
+
+## 6. J-Link 下载到 RAM 并调试
+
+J-Link 通过 SWD 下载第 3 节的 Secure RAM 镜像。连接支持 Secure 调试的 J-Link，给目标板供电，确认 SWDIO、SWCLK、GND 和 VTref 已连接。以下命令在 Windows PowerShell 中执行，示例假定 SEGGER 和 Arm GNU 工具已加入 PATH。
+
+### 6.1 确认镜像与启动地址
+
+使用同一次构建的 `freertos_hello.bin` 和 `freertos_hello.elf`。`.bin` 用于 Commander 下载，`.elf` 提供 GDB 下载地址和调试符号。
+
+```powershell
+python .\parse-bin.py "D:/NXP/work-prj/kw45b41zevk_freertos_hello/freertos_hello.bin"
+arm-none-eabi-objdump -h "D:/NXP/work-prj/kw45b41zevk_freertos_hello/freertos_hello.elf"
+```
+
+确认 ELF 中标记为 `LOAD` 的段全部位于 Secure SRAM 镜像区 `0x30008000–0x3000FFFF`，其中 `.interrupts` 从 `0x30008000` 开始。当前镜像的 `.bin` 为 22,728 字节，加载范围为 `[0x30008000, 0x3000D8C8)`。向量表 Word 0 为初始 MSP `0x30018000`，Word 1 为带 Thumb 标志的入口 `0x3000847D`。调试器写入的 PC 为 `0x3000847C`，Thumb 状态由 `xPSR.T` 指定。
+
+`m_data1` 位于 `[0x30010000, 0x30018000)`，其中 `.bss`、heap、stack 没有下载内容。当前镜像的 `Reset_Handler` 设置 `VTOR`、`MSP` 和 `MSPLIM`，然后用 `stmia` 初始化该区 ECC，再进入 `SystemInit()`。停在入口时，先用寄存器或反汇编窗口查看，等 ECC 循环结束再读栈或查看 `m_data1`。
+
+### 6.2 用 J-Link Commander 下载并运行
+
+在仓库根目录执行一键下载。
+
+```powershell
+JLink.exe .\run_ram.jlink
+```
+
+脚本在连接前已指定设备、SWD 和 4000 kHz，因此正常连接时会直接进入下载流程。**更换设备型号时，修改 [run_ram.jlink](run_ram.jlink) 开头的这一行，启动命令照常使用。**
+
+```text
+device KW45B41Z83
+```
+
+将 `KW45B41Z83` 替换为 J-Link 支持的实际器件名。若新型号使用不同的 SRAM 布局，先核对其 Secure SRAM 范围和链接脚本，再按 6.1 的结果更新镜像路径、加载地址、VTOR、MSP 和 PC。
+
+脚本连接后执行 Reset 并暂停 CPU，再下载和回读校验，最后设置启动寄存器并从 `Reset_Handler` 运行。日志应显示 `Verify successful.`，读回两个向量表 Word，并由 `Regs` 显示 PC 为 `0x3000847C`、MSP 为 `0x30018000`，且 `xPSR.T = 1`。运行后从板载 Debug UART（115200 baud，8N1）应约每秒收到一行 `Hello world.`。需逐条观察时，直接启动 `JLink.exe`，按脚本顺序输入命令，先核对 `Regs` 再执行 `g`。下载后若复位或断电，从下载步骤重新开始。 [SEGGER J-Link Commander](https://kb.segger.com/J-Link_Commander)
+
+### 6.3 用 J-Link GDB Server 下载 ELF 并断点调试
+
+退出占用同一个 J-Link 的 Commander 或 IDE 会话。打开第一个 PowerShell 窗口启动 GDB Server。
+
+```powershell
+JLinkGDBServerCL.exe -device KW45B41Z83 -if SWD -speed 4000 -port 2331 -localhostonly 1
+```
+
+在第二个 PowerShell 窗口启动 GDB。
+
+```powershell
+arm-none-eabi-gdb "D:/NXP/work-prj/kw45b41zevk_freertos_hello/freertos_hello.elf"
+```
+
+在 GDB 提示符下执行以下命令。先确认 `compare-sections` 的加载段均匹配，且回读的两个 Word 与本地镜像一致，再继续设置寄存器。
+
+```gdb
+target remote localhost:2331
+monitor reset
+load
+compare-sections
+x/2wx 0x30008000
+```
+
+```gdb
+# Use the image vectors for MSP and the instruction address of Reset_Handler.
+monitor reg CONTROL = 0x00000000
+set {unsigned int}0xE000ED08 = 0x30008000
+monitor reg MSP = (0x30008000)
+set $pc = (*(unsigned int *)0x30008004) & ~1
+set $xpsr = 0x01000000
+info registers pc sp xpsr
+x/i $pc
+
+# Check the first startup instruction and stop again after the ECC loop.
+stepi
+hbreak SystemInit
+continue
+```
+
+停在 `SystemInit()` 后，可用 `info breakpoints` 查看并用 `delete <编号>` 释放已用的硬件断点。继续用 `hbreak main` 或 `hbreak hello_task` 验证 FreeRTOS 启动。每次重新下载都按 `monitor reset` → `load` → 设置启动寄存器的顺序执行。 [SEGGER J-Link GDB Server](https://kb.segger.com/J-Link_GDB_Server) · [GNU GDB 加载命令](https://www.sourceware.org/gdb/current/onlinedocs/gdb.html/Target-Commands.html)
+
+### 6.4 J-Link 排障
+
+| 现象 | 定位与处理 |
+| :--- | :--- |
+| 连接失败或 Secure SRAM 访问失败 | 核对目标供电、VTref、SWD 接线、`KW45B41Z83` 器件名和 Secure 调试权限。连接不稳时先把 SWD 速率降到 `1000` kHz。Commander 用 `Regs` 确认 CPU 停在 Thread mode（`IPSR = 0`）后再设置启动寄存器。 |
+| 下载或回读在 `0x3000C000` 附近失败 | SEGGER 的 KW45 默认连接 ECC 初始化范围为 `[0x30004000, 0x3000C000)`，当前镜像末端超出该范围。排除 SWD 和 Secure 访问问题后，检查 J-Link 的 Work RAM / ECC 配置，确认下载前已初始化镜像尾部。SEGGER 提供 `SetWorkRAM` 和 `SetInitWorkRAMOnConnect` 用于配置连接时的 ECC 初始化。 |
+| PC 已指向 `Reset_Handler`，进入 C 代码前后触发 Fault | 检查 `xPSR.T`、MSP 和 `VTOR`。在 GDB 中用 `x/wx 0xE000ED28` 读 CFSR。若为 `0x00008200`，用 `x/wx 0xE000ED38` 读 BFAR，结合故障地址确认是镜像区回读异常，还是 `m_data1` 的 ECC 初始化未执行。 |
+| 断点无法命中，或程序正常运行但 UART 无输出 | 核对 ELF/BIN 对应关系、是否已到达 `main` / `hello_task`、是否因断点保持暂停，以及 Debug UART 对应的 COM 口和 115200 baud 配置。 |
+
+J-Link 默认连接可能初始化与应用重叠的 RAM。已通过 CAN ISP 或 Commander 运行的镜像若要接入调试，优先使用 6.3 在同一会话重新下载并调试。保留现场时，须在连接前禁用 Work RAM 初始化并使用无复位连接，仅设置 `-noreset` 无法阻止 KW45 默认的 RAM 初始化。 [SEGGER NXP KW45](https://kb.segger.com/NXP_KW45) · [SEGGER ECC](https://kb.segger.com/ECC) · [SEGGER J-Link Command Strings](https://kb.segger.com/J-Link_Command_Strings)
