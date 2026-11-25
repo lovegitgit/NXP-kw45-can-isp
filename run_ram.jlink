@@ -1,0 +1,29 @@
+// J-Link Commander Script for KW45 RAM Download & Execution
+// Usage: JLink.exe -device KW45B41Z83 -if SWD -speed 4000 -autoconnect 1 -CommanderScript run_ram.jlink
+
+// 1. Reset and halt the CPU
+r
+h
+
+// 2. Initialize SRAM ECC for m_interrupts, m_text (0x30008000 - 0x3000FFFF) and m_data1 (0x30010000 - 0x30017FFF)
+//    by loading the binary (J-Link performs aligned writes)
+loadbin D:/NXP/work-prj/kw45b41zevk_freertos_hello/freertos_hello.bin, 0x30008000
+
+// 3. Switch back to MSP (CONTROL = 0) and clear PSPLIM / MSPLIM before setting MSP
+wreg CONTROL, 0x00000000
+wreg MSPLIM, 0x00000000
+wreg PSPLIM, 0x00000000
+
+// 4. Set Vector Table Offset Register (SCB->VTOR = 0xE000ED08) to 0x30008000
+w4 0xE000ED08, 0x30008000
+
+// 5. Load Initial MSP (R13) from 0x30008000 (0x30018000) and MSPLIM from 0x30017800
+wreg MSP, 0x30018000
+wreg MSPLIM, 0x30017800
+
+// 6. Set PC (R15) to Reset_Handler (0x3000847C) - J-Link wreg requires "R15 (PC)" or "SetPC" command
+SetPC 0x3000847C
+
+// 7. Start execution
+g
+qc
