@@ -107,11 +107,13 @@ self.device.set_filters([{"can_id": self.rxid, "can_mask": 0x7FF}])
 
 ### 4.1 传统 BusPal 桥接方式 vs SPSDK 原生 CAN 方式
 
-| 对比维度 | 传统 C++ `blhost.exe` (BusPal 桥接) | SPSDK `blhost` 原生 CAN 接口 |
+| 对比维度 | C++ `blhost.exe` 2.6.7（BusPal CAN 桥接） | SPSDK 3.1.0 `blhost` 原生 CAN 接口 |
 | :--- | :--- | :--- |
 | **硬件链路** | PC $\xrightarrow{\text{USB UART (COMx)}}$ NXP 开发板 (BusPal) $\xrightarrow{\text{CAN}}$ 目标 MCU | PC $\xrightarrow{\text{USB}}$ **任意品牌 CAN 分析仪 (如 PCAN)** $\xrightarrow{\text{CAN}}$ 目标 MCU |
 | **命令行选项** | `-b can -p COM3` | `-cb "interface[,channel,bitrate,rxid,txid]"` |
 | **局限性** | 只能使用刷了 BusPal 固件的特定 NXP 桥接板 | 支持上表所有 `python-can` 硬件设备 |
+
+SPSDK 3.1.0 的 `-b / --buspal` 只实现了 SPI 和 I2C。使用 SPSDK 通过 PCAN 连接 CAN 时，选用下面的 `-cb` 命令。USB 转串口直连目标 UART 则使用 `-p COM3`。沿用 COM3 上的 BusPal CAN 桥接板时，使用支持 `-b can` 的 C++ `blhost.exe` 2.6.7。
 
 ### 4.2 SPSDK `blhost -cb` 参数语法与实战示例
 
@@ -153,6 +155,46 @@ blhost -cb "gs_usb,0,1000000,0x123,0x321" get-property 1
 blhost -cb "canalystii,0,1000000,0x123,0x321" get-property 1
 ```
 
-### 4.3 配合 `can-isp.py` 进行旁路抓包与 SPSDK 协议实时翻译
-- **场景 A（单 CAN 卡抓包）**：当使用另一套主机或 `blhost.exe -b can -p COM3` 与 KW45 通信时，将 PCAN 挂在同一 CAN 总线上运行 `python can-isp.py`，即可旁路监听 `0x321`（主机请求）与 `0x123`（KW45 响应）并实时翻译出 MBOOT 命令与返回值。
-- **场景 B（PCAN 共享模式同时通信与抓包）**：如果先打开 `PCAN-View` 或在支持共享句柄的驱动下，通过 `scan-can.py` 可看到通道状态为 `PCAN-VIEW (In use by PCAN-View, still connectable)`，此时仍可连接该通道进行报文收发或监听。
+### 4.3 使用 `can-isp.py` 监听 KW45 CAN ISP（SPSDK 3.1.0）
+
+`can-isp.py` 将 8 字节以内的 Classic CAN 帧按 CAN ID 重组为 MBOOT 包，再用 SPSDK 解码命令、属性和响应状态。下载和查询命令由另一个终端的 `blhost` 发送。日志中的 `Inject command` 是对已收到的主机命令的描述。
+
+#### 确认 Python 环境
+
+在 Windows PowerShell 中进入仓库根目录，确认运行脚本的 Python 和当前 PATH 上的 `blhost` 都能找到 SPSDK 3.1.0。
+
+```powershell
+python -m pip show spsdk python-can
+blhost --version
+```
+
+若当前 Python 缺少依赖，在对应环境中安装指定版本。Windows 上还需要 PCAN 驱动。 [SPSDK 3.1.0 CAN 接口说明](https://spsdk.readthedocs.io/en/v3.1.0/apps/blhost.html#blhost-can)
+
+```powershell
+python -m pip install "spsdk[can]==3.1.0"
+```
+
+#### 开始监听并发出一次查询
+
+1. 按住 KW45 EVK 的 SW4 后复位，进入 ROM ISP。将用于监听的 PCAN 接到同一条 CAN 总线。
+2. 在第一个终端确认 PCAN 通道后启动监听。脚本顶部的 `PCAN_CHANNEL` 默认是 `PCAN_USBBUS1`，`BITRATE` 为 `1000000`，`CAN_FILTERS` 接收 `0x321` 和 `0x123` 两个 11-bit ID。现场参数不同时，修改对应常量即可。
+
+   ```powershell
+   python .\scan-can.py -i pcan
+   python .\can-isp.py
+   ```
+
+3. 在第二个终端从发送端查询 Bootloader 版本。若使用另一块 PCAN，请把命令里的通道替换成发送端的实际通道。SPSDK 的 `rxid` 和 `txid` 以主机为视角，分别对应目标响应 `0x123` 和主机请求 `0x321`。 [SPSDK 3.1.0 `--can` 参数](https://spsdk.readthedocs.io/en/v3.1.0/apps/blhost.html#cmdoption-blhost-cb)
+
+   ```powershell
+   blhost -cb "pcan,PCAN_USBBUS1,1000000,0x123,0x321" get-property 1
+   ```
+
+4. 在监听窗口确认看到 `0x321` 的 `get-property` 请求和 `0x123` 的响应。SPSDK 解码成功时，包的十六进制数据下方会出现 `->` 开头的解码行。按 Ctrl+C 停止。
+
+| 现象 | 优先检查 |
+| :--- | :--- |
+| 连不上 PCAN | 检查驱动、通道名，以及通道是否被其他进程占用。 |
+| 只有原始包，缺少 `->` 解码行 | 对于 `COMMAND` 或 `PING_RESPONSE` 等可解码包，检查监听脚本所在的 Python 是否装有 SPSDK 3.1.0。脚本中的 SPSDK import 失败时会保留包输出。 |
+| 只能看到响应，缺少请求 | 同一 PCAN 通道共享时，确认驱动是否向监听端交付其他进程发送的帧。需要稳定看到两个方向时，用独立监听适配器挂到同一总线。 |
+| 无法按预期调整采样点 | 当前脚本以 Classic CAN 模式打开 PCAN，使用 `BITRATE` 选择驱动位速率配置。源码里的 `F_CLOCK` 和 `NOM_*` 参数属于 PCAN CAN FD 参数接口，Classic CAN 自定义采样点需要使用 `timing=can.BitTiming(...)`。 [python-can PCAN 位时序参数](https://python-can.readthedocs.io/en/v4.6.0/interfaces/pcan.html) |

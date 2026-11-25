@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 # -*- encoding: utf-8 -*-
 
+"""Monitor KW45 CAN ISP traffic on PCAN and decode MBOOT with SPSDK 3.1.0.
+
+Run with python can-isp.py and press Ctrl+C to stop. Board and host CAN
+settings are defined below. See CAN_Scanner_and_SPSDK_Devices_Guide.md
+for setup, example traffic, and troubleshooting.
+"""
+
 import struct
 import can
 

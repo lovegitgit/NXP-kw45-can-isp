@@ -1,6 +1,6 @@
-// J-Link Commander Script for KW45 RAM Download & Execution
+// J-Link Commander Script for KW45 Secure SRAM Download & Execution
 // Usage: JLink.exe .\run_ram.jlink
-// Update the binary path and vector-derived register values for each image.
+// Update the Secure RAM binary path and vector-derived register values after rebuilding.
 
 ExitOnError 1
 
