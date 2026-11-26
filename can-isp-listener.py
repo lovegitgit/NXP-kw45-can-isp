@@ -11,26 +11,22 @@ for setup, example traffic, and troubleshooting.
 import struct
 import can
 
-try:
-    from spsdk.mboot.commands import (
-        CmdHeader,
-        CommandTag,
-        GenericResponse,
-        GetPropertyResponse,
-        ResponseTag,
-        parse_cmd_response,
-    )
-    from spsdk.mboot.error_codes import stringify_status_code
-    from spsdk.mboot.properties import (
-        PropertyTag,
-        Version,
-        parse_property_value,
-    )
-    from spsdk.mboot.protocol.serial_protocol import PingResponse
-    from spsdk.utils.family import FamilyRevision
-    HAS_SPSDK = True
-except ImportError:
-    HAS_SPSDK = False
+from spsdk.mboot.commands import (
+    CmdHeader,
+    CommandTag,
+    GenericResponse,
+    GetPropertyResponse,
+    ResponseTag,
+    parse_cmd_response,
+)
+from spsdk.mboot.error_codes import stringify_status_code
+from spsdk.mboot.properties import (
+    PropertyTag,
+    Version,
+    parse_property_value,
+)
+from spsdk.mboot.protocol.serial_protocol import PingResponse
+from spsdk.utils.family import FamilyRevision
 
 # --- Configuration ---
 PCAN_CHANNEL = 'PCAN_USBBUS1'
@@ -155,13 +151,11 @@ class MbootDecoder:
     """Decode reassembled MBOOT packets using SPSDK."""
 
     def __init__(self, family_name=TARGET_FAMILY):
-        self.family = FamilyRevision(family_name) if HAS_SPSDK else None
+        self.family = FamilyRevision(family_name)
         self.last_property_tag = None
         self.last_ext_mem_id = None
 
     def _get_property_name(self, prop_tag):
-        if not HAS_SPSDK:
-            return f"0x{prop_tag:02X}"
         try:
             tag_enum = PropertyTag.from_index(prop_tag, self.family)
             return f"'{tag_enum.friendly_name}' ({tag_enum.description})"
@@ -169,7 +163,7 @@ class MbootDecoder:
             return f"Unknown(0x{prop_tag:02X})"
 
     def decode(self, pkt_type, pkt_bytes):
-        if not HAS_SPSDK or len(pkt_bytes) < 2:
+        if len(pkt_bytes) < 2:
             return []
 
         ptype = pkt_bytes[1]

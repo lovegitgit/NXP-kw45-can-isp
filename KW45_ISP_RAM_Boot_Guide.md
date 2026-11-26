@@ -7,22 +7,31 @@
 在 `can-isp` 仓库根目录打开 Windows PowerShell。每次重新构建后，用新的 BIN 重新生成。
 
 ```powershell
-python .\parse-bin.py "D:/NXP/work-prj/kw45b41zevk_freertos_hello/freertos_hello.bin"
+# 原始 RAM BIN 模式
+python .\make-ram-boot.py .\freertos_hello.bin
+
+# 签名 MBI 模式（Secure Boot 下配合 Debug Auth 通过 J-Link 下载到 RAM）
+python .\make-ram-boot.py .\freertos_hello.bin --mbi
+
+# SB3.1 安全容器一步生成模式
+python .\make-ram-boot.py .\freertos_hello.bin --sb3
 ```
 
-脚本会输出三组 ISP 下载与启动命令，为本工程的 Secure RAM 镜像在当前目录生成 `freertos_hello.jlink`，并打印 J-Link 运行命令。
+脚本会输出对应的 ISP 下载与启动命令，在当前目录生成 `.jlink` 与一键批处理 `*_run.bat`（`--sb3` 模式生成 `.sb3` 与 `*_sb3_run.bat`）。
 
 | 启动参数 | 来源 |
 | :--- | :--- |
 | 初始 MSP | BIN 向量表 Word 0 |
 | `Reset_Handler` | BIN 向量表 Word 1。ISP `execute` 使用原值，J-Link 清除最低位后设为 PC，并单独设置 `xPSR.T` |
-| 加载地址、向量表基址 | 由 linker script 的 `m_interrupts` 决定。当前脚本按 `Reset_Handler` 所在的 32 KiB 边界推算，布局改变时用 `--addr` 指定实际地址 |
+| 加载地址、向量表基址 | 由 linker script 的 `m_interrupts` 决定。当前脚本按 `Reset_Handler` 所在的 4 KiB 边界推算，布局改变时用 `--addr` 指定实际地址 |
 
 ## 2. 选择下载方式
 
 ### ROM ISP
 
-KW45 EVK 按住 SW4（PTA4）复位进入 ISP。选择和接线匹配的命令组，先执行 `write-memory`，收到成功状态后再执行 `execute`。
+KW45 EVK 按住 SW4（PTA4）复位进入 ISP，支持两种下发方式：
+1. **`write-memory` + `execute`**（`make-ram-boot.py`）：先执行 `write-memory`，收到成功状态后再执行 `execute`。
+2. **`receive-sb-file` 一步执行**（`make-ram-boot.py --sb3`）：将包含 `load 0x30005000` 与 `execute 0x30005000` 的 `.sb3` 容器直接下发至芯片，ROM 验签解密后自动在 RAM 中启动，无需再发 `execute`。
 
 | 连接方式 | 脚本输出的命令组 |
 | :--- | :--- |
@@ -40,7 +49,7 @@ KW45 这里使用的 `blhost execute` 参数依次是向量表中的入口、镜
 JLink.exe ".\freertos_hello.jlink"
 ```
 
-脚本暂停 CPU 后下载并回读校验，设置 VTOR、MSP、PC 和 Thumb 状态，再运行。两种下载方式启动后，均可在 Debug UART（115200 baud，8N1）观察约每秒一行 `Hello world.`。 [SEGGER J-Link Commander](https://kb.segger.com/J-Link_Commander)
+脚本暂停 CPU 后下载并回读校验，设置 VTOR、MSP、PC 和 Thumb 状态，再运行。两种下载方式启动后，均可在 Debug UART（115200 baud，8N1）观察约每秒一行递增输出 `Hello world count 0.`、`Hello world count 1.` ...。 [SEGGER J-Link Commander](https://kb.segger.com/J-Link_Commander)
 
 ## 3. 用 GDB 在启动阶段设断点
 
@@ -51,7 +60,7 @@ JLinkGDBServerCL.exe -device KW45B41Z83 -if SWD -speed 4000 -port 2331 -localhos
 ```
 
 ```powershell
-arm-none-eabi-gdb "D:/NXP/work-prj/kw45b41zevk_freertos_hello/freertos_hello.elf"
+arm-none-eabi-gdb ".\freertos_hello.elf"
 ```
 
 在 GDB 中下载并回读 ELF。用 ELF 的 `__isr_vector` 定位向量表。

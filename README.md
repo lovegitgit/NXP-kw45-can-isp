@@ -7,10 +7,18 @@
 在本仓库根目录打开 Windows PowerShell，将示例路径换成当前构建产物的位置。
 
 ```powershell
-python .\parse-bin.py "D:/NXP/work-prj/kw45b41zevk_freertos_hello/freertos_hello.bin"
+# 1. 原始 RAM BIN 模式
+python .\make-ram-boot.py .\freertos_hello.bin
+
+# 2. 签名 MBI 模式（用于 Secure Boot 下 Debug Auth 打开 SWD 后通过 J-Link 下载到 RAM）
+python .\make-ram-boot.py .\freertos_hello.bin --mbi
+
+# 3. SB3.1 安全容器模式（自动使用 keys/ 目录密钥）
+python .\make-ram-boot.py .\freertos_hello.bin --sb3
 ```
 
-- **ROM ISP**：让目标进入 ISP，按接线选用脚本输出的 BusPal CAN、PCAN 或 UART 命令。先执行 `write-memory`，成功后执行 `execute`。
+- **ROM ISP（`write-memory` + `execute`）**：让目标进入 ISP，按接线选用 `make-ram-boot.py` 输出的 BusPal CAN、PCAN 或 UART 命令（或直接运行生成的 `*_run.bat`）。先执行 `write-memory`，成功后执行 `execute`。
+- **ROM ISP（SB3.1 一步加载并执行）**：运行 `make-ram-boot.py --sb3` 生成 `<stem>.sb3` 与 `*_sb3_run.bat`，通过 `blhost -cb "pcan,PCAN_USBBUS1" receive-sb-file` 一步完成验签、写入 RAM 与跳转执行。
 - **J-Link**：连接 SWD，执行脚本打印的命令。上面的示例会在当前目录生成 `freertos_hello.jlink`。
 
 ```powershell
@@ -23,21 +31,20 @@ JLink.exe .\freertos_hello.jlink
 
 | 文件 | 用途和用法 |
 | :--- | :--- |
-| [parse-bin.py](parse-bin.py) | 输入应用 BIN，解析 MSP 和入口，打印三组 ISP 命令，为本工程的 Secure RAM 镜像生成同名 `.jlink` 并打印运行命令。可选 `--addr` 用于明确指定加载地址，`--uart-port` 用于选择 UART COM 口和波特率。 |
+| [make-ram-boot.py](make-ram-boot.py) | 统一 RAM 启动工具：输入 RAM `.bin`，默认输出原始 BIN 下载指令、`.jlink` 与 `*_run.bat`；加 `--mbi` 默认生成签名 MBI（`*_mbi.bin`，供 Secure Boot 下 J-Link 烧录 RAM）及 `*_mbi.jlink`；加 `--sb3` 使用 [keys/](keys/README.md) 密钥直接打包为 `<stem>.sb3` 并生成 `*_sb3_run.bat`。 |
+| [keys/](keys/README.md) | 存放 KW45 原厂测试密钥（`ROT1_p384.pem`、`ROT1_cert_block.bin`、`sb3kdk.txt` 等）；如需生成客户自用密钥并替换，可使用 NXP 原版 [dm-kw45-secure-boot-scripts](https://github.com/nxp-appcodehub/dm-kw45-secure-boot-scripts) 生成。 |
 | [scan-can.py](scan-can.py) | 扫描 CAN 适配器和通道，提供 PCAN 通道的诊断信息。用 `-i pcan` 只扫 PCAN，用 `--all` 扩展到全部后端。 |
-| [can-isp.py](can-isp.py) | 通过 PCAN 接收 Classic CAN 报文，重组 MBOOT 包并用 SPSDK 解码。通道、位速率和过滤 ID 在脚本顶部配置，用 Ctrl+C 停止。 |
-| [run_ram.jlink](run_ram.jlink) | J-Link Commander 的手写示例，使用固定的镜像路径和启动地址。新镜像可直接用 `parse-bin.py` 生成命令文件。 |
-| [kw45_ram_jlink.py](kw45_ram_jlink.py) | 供 `parse-bin.py` 和 `prepare-ram-downloads.py` 调用的 J-Link 命令文件生成模块。 |
-| [prepare-ram-downloads.py](prepare-ram-downloads.py) | 可指定输出目录生成 J-Link 命令文件。提供签名私钥、证书块和 SB3KDK 文件路径后，还会生成 SB3.1 的 RAM 下载配置，供 `nxpimage` 导出容器。 |
-| `freertos_hello.jlink` | 由当前 BIN 生成的命令文件，包含该镜像的路径和向量值。重新构建后用新 BIN 再生成。 |
-| [task.md](task.md) | 项目任务记录。 |
+| [can-isp-listener.py](can-isp-listener.py) | 通过 PCAN 接收 Classic CAN 报文，重组 MBOOT 包并用 SPSDK 解码。通道、位速率和过滤 ID 在脚本顶部配置，用 Ctrl+C 停止。 |
+| [freertos_hello.bin](freertos_hello.bin) | 已打补丁并链接至 Secure SRAM (`0x30005000`) 的 FreeRTOS 示例固件（tested on SDK 26.06）。 |
+| [freertos_hello.elf](freertos_hello.elf) | 与 `freertos_hello.bin` 配套的 ELF 调试文件（用于 GDB 源码级断点调试）。 |
+| [0001-link-to-ram-run.patch](0001-link-to-ram-run.patch) | 将官方 `kw45b41zevk_freertos_hello` 改造为 Secure SRAM 运行的完整源码补丁。 |
 | [.gitignore](.gitignore) | Git 忽略规则。 |
 
 ## CAN 诊断
 
 ```powershell
 python .\scan-can.py -i pcan
-python .\can-isp.py
+python .\can-isp-listener.py
 ```
 
 监听时从另一个终端执行 ISP 命令。原生 CAN 和普通 UART 使用 SPSDK 3.1.0 的 `blhost`，BusPal CAN 经 COM 口桥接使用 C++ `blhost.exe` 2.6.7。CAN 适配器需要相应驱动，Python 环境需要 `python-can`。 [CAN 设备与 SPSDK 使用手册](CAN_Scanner_and_SPSDK_Devices_Guide.md)

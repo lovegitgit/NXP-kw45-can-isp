@@ -2,7 +2,7 @@
 
 ## 1. 概述
 
-本工程包含通用 CAN 硬件接口与通道扫描脚本（`scan-can.py`），用于自动发现当前系统已连接的各品牌 CAN 收发器硬件通道，并与 NXP **SPSDK (`blhost` / `MbootCANInterface`)** 及自定义监听脚本（`can-isp.py`）无缝对接。
+本工程包含通用 CAN 硬件接口与通道扫描脚本（`scan-can.py`），用于自动发现当前系统已连接的各品牌 CAN 收发器硬件通道，并与 NXP **SPSDK (`blhost` / `MbootCANInterface`)** 及自定义监听脚本（`can-isp-listener.py`）无缝对接。
 
 ---
 
@@ -109,7 +109,7 @@ self.device.set_filters([{"can_id": self.rxid, "can_mask": 0x7FF}])
 
 | 对比维度 | C++ `blhost.exe` 2.6.7（BusPal CAN 桥接） | SPSDK 3.1.0 `blhost` 原生 CAN 接口 |
 | :--- | :--- | :--- |
-| **硬件链路** | PC $\xrightarrow{\text{USB UART (COMx)}}$ NXP 开发板 (BusPal) $\xrightarrow{\text{CAN}}$ 目标 MCU | PC $\xrightarrow{\text{USB}}$ **任意品牌 CAN 分析仪 (如 PCAN)** $\xrightarrow{\text{CAN}}$ 目标 MCU |
+| **硬件链路** | `PC` → `USB UART (COMx)` → NXP 开发板 (BusPal) → `CAN` → 目标 MCU | `PC` → `USB` → **任意品牌 CAN 分析仪 (如 PCAN)** → `CAN` → 目标 MCU |
 | **命令行选项** | `-b can -p COM3` | `-cb "interface[,channel,bitrate,rxid,txid]"` |
 | **局限性** | 只能使用刷了 BusPal 固件的特定 NXP 桥接板 | 支持上表所有 `python-can` 硬件设备 |
 
@@ -155,9 +155,9 @@ blhost -cb "gs_usb,0,1000000,0x123,0x321" get-property 1
 blhost -cb "canalystii,0,1000000,0x123,0x321" get-property 1
 ```
 
-### 4.3 使用 `can-isp.py` 监听 KW45 CAN ISP（SPSDK 3.1.0）
+### 4.3 使用 `can-isp-listener.py` 监听 KW45 CAN ISP（SPSDK 3.1.0）
 
-`can-isp.py` 将 8 字节以内的 Classic CAN 帧按 CAN ID 重组为 MBOOT 包，再用 SPSDK 解码命令、属性和响应状态。下载和查询命令由另一个终端的 `blhost` 发送。日志中的 `Inject command` 是对已收到的主机命令的描述。
+`can-isp-listener.py` 将 8 字节以内的 Classic CAN 帧按 CAN ID 重组为 MBOOT 包，再用 SPSDK 解码命令、属性和响应状态。下载和查询命令由另一个终端的 `blhost` 发送。日志中的 `Inject command` 是对已收到的主机命令的描述。
 
 #### 确认 Python 环境
 
@@ -181,7 +181,7 @@ python -m pip install "spsdk[can]==3.1.0"
 
    ```powershell
    python .\scan-can.py -i pcan
-   python .\can-isp.py
+   python .\can-isp-listener.py
    ```
 
 3. 在第二个终端从发送端查询 Bootloader 版本。若使用另一块 PCAN，请把命令里的通道替换成发送端的实际通道。SPSDK 的 `rxid` 和 `txid` 以主机为视角，分别对应目标响应 `0x123` 和主机请求 `0x321`。 [SPSDK 3.1.0 `--can` 参数](https://spsdk.readthedocs.io/en/v3.1.0/apps/blhost.html#cmdoption-blhost-cb)
