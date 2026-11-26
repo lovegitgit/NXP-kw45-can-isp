@@ -9,7 +9,36 @@ from pathlib import Path
 import struct
 import sys
 
-from kw45_ram_jlink import write_ram_command_file
+def write_ram_command_file(output: Path, image: Path, base: int, sp: int, reset: int) -> None:
+    image = image.resolve()
+    if output.resolve() == image or (output.exists() and output.samefile(image)):
+        raise ValueError("Output command file must differ from the input BIN")
+    image_path = image.as_posix()
+    if any(character in image_path for character in '"\r\n'):
+        raise ValueError("BIN path cannot contain a double quote or line break")
+    output.write_text(
+        f"""// KW45 Secure SRAM application download and execution.
+ExitOnError 1
+device KW45B41Z83
+si SWD
+speed 4000
+connect
+r
+h
+LoadFile "{image_path}" 0x{base:08X} noreset
+VerifyBin "{image_path}" 0x{base:08X}
+Mem32 0x{base:08X} 2
+WReg CONTROL 0x00000000
+W4 0xE000ED08 0x{base:08X}
+WReg MSP 0x{sp:08X}
+SetPC 0x{reset & ~1:08X}
+WReg XPSR 0x01000000
+Regs
+g
+Exit
+""",
+        encoding="utf-8",
+    )
 
 
 def parse_bin_vector(bin_path: str, load_addr: str, uart_port: str = "COM3") -> int:
