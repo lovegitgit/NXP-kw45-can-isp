@@ -29,6 +29,7 @@ JLink.exe .\freertos_hello.jlink
 | 文件 | 用途和用法 |
 | :--- | :--- |
 | [make-ram-boot.py](make-ram-boot.py) | 统一 RAM 启动工具：输入 RAM `.bin`，默认输出原始 BIN 下载指令、`.jlink` 与 `*_run.bat`；加 `--sb3` 使用 [keys/](keys/README.md) 密钥**同时生成签名 BIN（`*_signed.bin` + `*_signed.jlink`）与签名 SB3.1 容器（`<stem>.sb3` + `*_sb3_run.bat`）**。 |
+| [fw-boot-tool.py](fw-boot-tool.py) | 通用 ARM Cortex-M 固件分析与启动脚本生成工具（纯标准库，同时支持 `.elf` / `.axf` / `.out` 和 `.bin`）：解析向量表、统计精确 Flash/RAM 占用，并自动生成 ISP（`blhost`）指令、Windows 一键 `.bat` 与 J-Link 脚本（自动配置 `VTOR`/`MSP`/`SetPC`）。 |
 | [keys/](keys/README.md) | 存放 KW45 原厂测试密钥（`ROT1_p384.pem`、`ROT1_cert_block.bin`、`sb3kdk.txt` 等）；如需生成客户自用密钥并替换，可使用 NXP 原版 [dm-kw45-secure-boot-scripts](https://github.com/nxp-appcodehub/dm-kw45-secure-boot-scripts) 生成。 |
 | [scan-can.py](scan-can.py) | 扫描 CAN 适配器和通道，提供 PCAN 通道的诊断信息。用 `-i pcan` 只扫 PCAN，用 `--all` 扩展到全部后端。 |
 | [can-isp-listener.py](can-isp-listener.py) | 通过 PCAN 接收 Classic CAN 报文，重组 MBOOT 包并用 SPSDK 解码。通道、位速率和过滤 ID 在脚本顶部配置，用 Ctrl+C 停止。 |
