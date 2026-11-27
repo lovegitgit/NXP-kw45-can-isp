@@ -10,10 +10,7 @@
 # 1. 原始 RAM BIN 模式
 python .\make-ram-boot.py .\freertos_hello.bin
 
-# 2. 签名 MBI 模式（用于 Secure Boot 下 Debug Auth 打开 SWD 后通过 J-Link 下载到 RAM）
-python .\make-ram-boot.py .\freertos_hello.bin --mbi
-
-# 3. SB3.1 安全容器模式（自动使用 keys/ 目录密钥）
+# 2. 签名 BIN + SB3.1 安全容器模式（使用 keys/ 同时生成签名 *_signed.bin、*_signed.jlink、*.sb3 与 *_sb3_run.bat）
 python .\make-ram-boot.py .\freertos_hello.bin --sb3
 ```
 
@@ -31,7 +28,7 @@ JLink.exe .\freertos_hello.jlink
 
 | 文件 | 用途和用法 |
 | :--- | :--- |
-| [make-ram-boot.py](make-ram-boot.py) | 统一 RAM 启动工具：输入 RAM `.bin`，默认输出原始 BIN 下载指令、`.jlink` 与 `*_run.bat`；加 `--mbi` 默认生成签名 MBI（`*_mbi.bin`，供 Secure Boot 下 J-Link 烧录 RAM）及 `*_mbi.jlink`；加 `--sb3` 使用 [keys/](keys/README.md) 密钥直接打包为 `<stem>.sb3` 并生成 `*_sb3_run.bat`。 |
+| [make-ram-boot.py](make-ram-boot.py) | 统一 RAM 启动工具：输入 RAM `.bin`，默认输出原始 BIN 下载指令、`.jlink` 与 `*_run.bat`；加 `--sb3` 使用 [keys/](keys/README.md) 密钥**同时生成签名 BIN（`*_signed.bin` + `*_signed.jlink`）与签名 SB3.1 容器（`<stem>.sb3` + `*_sb3_run.bat`）**。 |
 | [keys/](keys/README.md) | 存放 KW45 原厂测试密钥（`ROT1_p384.pem`、`ROT1_cert_block.bin`、`sb3kdk.txt` 等）；如需生成客户自用密钥并替换，可使用 NXP 原版 [dm-kw45-secure-boot-scripts](https://github.com/nxp-appcodehub/dm-kw45-secure-boot-scripts) 生成。 |
 | [scan-can.py](scan-can.py) | 扫描 CAN 适配器和通道，提供 PCAN 通道的诊断信息。用 `-i pcan` 只扫 PCAN，用 `--all` 扩展到全部后端。 |
 | [can-isp-listener.py](can-isp-listener.py) | 通过 PCAN 接收 Classic CAN 报文，重组 MBOOT 包并用 SPSDK 解码。通道、位速率和过滤 ID 在脚本顶部配置，用 Ctrl+C 停止。 |

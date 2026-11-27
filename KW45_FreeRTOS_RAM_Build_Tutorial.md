@@ -39,21 +39,17 @@
 
 在 `can-isp` 仓库根目录打开 Windows PowerShell，直接引用当前目录的 `.\freertos_hello.bin`（或替换为你新编译出的路径）：
 
-### 方式一：原始 RAM BIN / 签名 MBI 下载（ISP / J-Link / 一键 `.bat`）
+### 方式一：原始 RAM BIN 下载（ISP / J-Link / 一键 `.bat`）
 ```powershell
-# 原始 RAM BIN 模式（生成 freertos_hello.jlink 和 freertos_hello_run.bat）
 python .\make-ram-boot.py .\freertos_hello.bin
-
-# 签名 MBI 模式（默认使用 keys/ 签名，生成 freertos_hello_mbi.bin 与 freertos_hello_mbi.jlink，适用于 Secure Boot 下 J-Link RAM 运行）
-python .\make-ram-boot.py .\freertos_hello.bin --mbi
 ```
-脚本将输出 BusPal CAN、Direct PCAN、UART 的 `write-memory` + `execute` 指令，并在当前目录生成 `.jlink` 与一键运行脚本 `*_run.bat`。
+脚本将输出 BusPal CAN、Direct PCAN、UART 的 `write-memory` + `execute` 指令，并在当前目录生成 `freertos_hello.jlink` 与一键运行脚本 `freertos_hello_run.bat`。
 
-### 方式二：一步生成 SB3.1 安全容器并执行
+### 方式二：一步生成签名 BIN 与签名 SB3.1 安全容器并执行（`--sb3`）
 ```powershell
 python .\make-ram-boot.py .\freertos_hello.bin --sb3
 ```
-脚本自动使用 `keys/` 下的原厂密钥生成 `freertos_hello.sb3` 与 `freertos_hello_sb3_run.bat`。容器内已包含 `load 0x30005000` 和 `execute 0x30005000`，执行 `blhost -cb "pcan,PCAN_USBBUS1" receive-sb-file .\freertos_hello.sb3` 即可一步完成验签、加载并运行。
+脚本自动使用 `keys/` 下的原厂密钥**同时生成签名 BIN（`freertos_hello_signed.bin` + `freertos_hello_signed.jlink`，供 Secure Boot 下 J-Link 烧录 RAM）与签名 SB3.1 容器（`freertos_hello.sb3` + `freertos_hello_sb3_run.bat`）**。容器内已包含 `load 0x30005000` 和 `execute 0x30005000`，执行 `blhost -cb "pcan,PCAN_USBBUS1" receive-sb-file .\freertos_hello.sb3` 即可一步完成验签、加载并运行。
 
 > **密钥生成说明**：`keys/` 目录默认为 NXP 原厂测试密钥。若客户已开启 Secure Boot，可通过 NXP 原版 [dm-kw45-secure-boot-scripts](https://github.com/nxp-appcodehub/dm-kw45-secure-boot-scripts) 生成自有密钥并替换到 `keys/` 目录（或用 `-k` 指定目录）。
 

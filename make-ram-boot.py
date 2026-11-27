@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 # -*- encoding: utf-8 -*-
 
-"""Unified KW45 RAM boot tool: raw RAM BIN, signed/plain MBI (--mbi), and SB3.1 (--sb3).
+"""Unified KW45 RAM boot tool: raw RAM BIN (default) and signed BIN + SB3.1 (--sb3).
 
 Parses Cortex-M vector tables from a RAM-linked .bin image and generates
 blhost (BusPal CAN / Direct PCAN / Direct UART), J-Link, and one-click
 Windows batch scripts for:
   1. Raw RAM binary execution (default)
-  2. NXP Master Boot Image packaging (--mbi, default signed for Secure Boot J-Link)
-  3. NXP Secure Binary v3.1 packaging with keys/ (--sb3)
+  2. Signed MBI binary (*_signed.bin + *_signed.jlink) and signed/encrypted
+     SB3.1 container (*.sb3 + *_sb3_run.bat) using keys/ (--sb3)
 """
 
 import argparse
@@ -25,42 +25,35 @@ from spsdk.utils.config import Config
 DEFAULT_KEYS_DIR = Path(__file__).resolve().parent / "keys"
 
 
-def generate_mbi_ram(
+def generate_signed_mbi_ram(
     input_bin: Path,
     output_mbi: Path,
     base_addr: int,
     keys_dir: Path,
     family: str = "kw45b41z8",
-    auth_type: str = "signed",
 ) -> bytes:
-    """Package a RAM-linked binary into NXP Master Boot Image (MBI) format."""
+    """Package a RAM-linked binary into a signed NXP Master Boot Image (MBI)."""
+    rot_pem = (keys_dir / "ROT1_p384.pem").resolve()
+    rot_cert_block = (keys_dir / "ROT1_cert_block.bin").resolve()
+    for key_file in (rot_pem, rot_cert_block):
+        if not key_file.is_file():
+            raise FileNotFoundError(f"Required KW45 key file missing: {key_file}")
+
     mbi_config = {
         "family": family,
         "outputImageExecutionTarget": "xip",
-        "outputImageAuthenticationType": auth_type,
+        "outputImageAuthenticationType": "signed",
         "outputImageExecutionAddress": hex(base_addr),
         "inputImageFile": input_bin.resolve().as_posix(),
         "masterBootOutputFile": output_mbi.resolve().as_posix(),
         "outputImageSubtype": "main",
         "firmwareVersion": 0,
+        "certBlock": rot_cert_block.as_posix(),
+        "signer": f"type=file;file_path={rot_pem.as_posix()}",
     }
 
-    search_paths = [str(input_bin.resolve().parent)]
-
-    if auth_type == "signed":
-        rot_pem = (keys_dir / "ROT1_p384.pem").resolve()
-        rot_cert_block = (keys_dir / "ROT1_cert_block.bin").resolve()
-        for key_file in (rot_pem, rot_cert_block):
-            if not key_file.is_file():
-                raise FileNotFoundError(f"Required KW45 key file missing: {key_file}")
-        mbi_config["certBlock"] = rot_cert_block.as_posix()
-        mbi_config["signer"] = f"type=file;file_path={rot_pem.as_posix()}"
-        search_paths.append(str(keys_dir.resolve()))
-    else:
-        mbi_config["enableTrustZone"] = False
-
     cfg = Config(mbi_config)
-    cfg.search_paths = search_paths
+    cfg.search_paths = [str(input_bin.resolve().parent), str(keys_dir.resolve())]
 
     mbi_obj = MasterBootImage.load_from_config(cfg)
     mbi_data = mbi_obj.export()
@@ -79,7 +72,7 @@ def generate_sb3_ram(
     kdk_access_rights: int = 3,
     description: str = "KW45B41Z8 SB3",
 ) -> bytes:
-    """Package a RAM-linked binary into signed/encrypted SB3.1 container."""
+    """Package a signed RAM binary into a signed/encrypted SB3.1 container."""
     rot_pem = (keys_dir / "ROT1_p384.pem").resolve()
     rot_cert_block = (keys_dir / "ROT1_cert_block.bin").resolve()
     sb3kdk = (keys_dir / "sb3kdk.txt").resolve()
@@ -167,10 +160,10 @@ def write_flash_bat(
     sp: int,
     pc: int,
     pcan_channel: str = "PCAN_USBBUS1",
-    mode: str = "raw",
+    use_sb3: bool = False,
 ) -> None:
     """Write a Windows batch script for one-click RAM download and execution via blhost."""
-    if mode == "sb3":
+    if use_sb3:
         content = f"""@echo off
 rem ==============================================================================
 rem One-Click SB3.1 Upload & Execute Script for KW45 via blhost (PCAN)
@@ -188,10 +181,9 @@ echo [SUCCESS] SB3 image loaded and executed in RAM!
 pause
 """
     else:
-        mode_label = "MBI RAM Image" if mode == "mbi" else "Raw RAM Image"
         content = f"""@echo off
 rem ==============================================================================
-rem One-Click {mode_label} Run Script for KW45 via blhost (PCAN)
+rem One-Click Raw RAM Image Run Script for KW45 via blhost (PCAN)
 rem Generated automatically by make-ram-boot.py
 rem ==============================================================================
 
@@ -215,13 +207,47 @@ pause
     output_bat.write_text(content, encoding="utf-8")
 
 
+def generate_jlink_if_valid(
+    jlink_path: Path,
+    target_image: Path,
+    target_addr: int,
+    file_size: int,
+    sp: int,
+    pc: int,
+    thumb_bit: int,
+) -> int:
+    """Validate KW45 Secure RAM bounds and write J-Link command file."""
+    if not 0x30005000 <= target_addr < 0x30010000:
+        print("\n[NOTE] J-Link command files are generated for KW45 Secure RAM images.")
+        return 0
+
+    image_end = target_addr + file_size
+    if image_end > 0x30010000 or target_addr % 0x400:
+        print("[ERROR] J-Link requires an aligned image within the KW45 Secure RAM image area.", file=sys.stderr)
+        return 1
+    if not thumb_bit or not target_addr <= (pc & ~1) < image_end:
+        print("[ERROR] Reset_Handler must be a Thumb entry in the image.", file=sys.stderr)
+        return 1
+    if sp % 8 or not 0x30010000 < sp <= 0x3001C000:
+        print("[ERROR] Initial MSP must be aligned and in the KW45 Secure RAM stack area.", file=sys.stderr)
+        return 1
+
+    try:
+        write_ram_command_file(jlink_path, target_image, target_addr, sp, pc)
+    except (OSError, ValueError) as exc:
+        print(f"[ERROR] Could not write J-Link command file: {exc}", file=sys.stderr)
+        return 1
+
+    print("\n--- Ready-to-use J-Link Commander Command ---")
+    print(f'JLink.exe ".\\{jlink_path.name}"')
+    return 0
+
+
 def process_ram_image(
     bin_path: str,
     load_addr: str = None,
-    use_mbi: bool = False,
     use_sb3: bool = False,
     family: str = "kw45b41z8",
-    auth_type: str = "signed",
     keys_dir: str = str(DEFAULT_KEYS_DIR),
     pcan_channel: str = "PCAN_USBBUS1",
     uart_port: str = "COM3",
@@ -259,124 +285,103 @@ def process_ram_image(
 
     cwd = Path.cwd()
     stem = input_path.stem
-    keys_path = Path(keys_dir)
 
     if use_sb3:
+        keys_path = Path(keys_dir)
         if not keys_path.is_dir():
             print(f"[ERROR] Keys directory not found: {keys_path}", file=sys.stderr)
             return 1
 
+        output_signed = cwd / f"{stem}_signed.bin"
+        signed_data = generate_signed_mbi_ram(
+            input_bin=input_path,
+            output_mbi=output_signed,
+            base_addr=target_addr,
+            keys_dir=keys_path,
+            family=family,
+        )
+
         output_sb3 = cwd / f"{stem}.sb3"
         sb3_data = generate_sb3_ram(
-            input_bin=input_path,
+            input_bin=output_signed,
             output_sb3=output_sb3,
             load_addr=target_addr,
             keys_dir=keys_path,
             family=family,
         )
         bat_path = cwd / f"{stem}_sb3_run.bat"
-        print(f"\n[OK] SB3.1 Mode Enabled ({family})")
-        print(f"[OK] Keys Directory     : {keys_path.resolve()}")
-        print(f"[OK] Generated SB3 File : {output_sb3.name} ({len(sb3_data)} bytes)")
+        jlink_path = cwd / f"{stem}_signed.jlink"
 
-        print("\n--- C++ blhost.exe 2.6.7 Command (BusPal CAN via COM3) ---")
+        print(f"\n[OK] SB3.1 Mode Enabled ({family}: Signed BIN -> SB3.1)")
+        print(f"[OK] Keys Directory        : {keys_path.resolve()}")
+        print(f"[OK] Generated Signed BIN  : {output_signed.name} ({len(signed_data)} bytes)")
+        print(f"[OK] Generated Signed SB3  : {output_sb3.name} ({len(sb3_data)} bytes)")
+
+        print("\n--- [SB3.1] C++ blhost.exe 2.6.7 Command (BusPal CAN via COM3) ---")
         print(f'.\\blhost.exe -b can -p COM3 receive-sb-file "{output_sb3.name}"')
 
-        print("\n--- Ready-to-use SPSDK blhost Command (Direct PCAN) ---")
+        print("\n--- [SB3.1] Ready-to-use SPSDK blhost Command (Direct PCAN) ---")
         print(f'blhost -cb "pcan,{pcan_channel}" receive-sb-file "{output_sb3.name}"')
 
-        print("\n--- Ready-to-use SPSDK blhost Command (Direct UART) ---")
+        print("\n--- [SB3.1] Ready-to-use SPSDK blhost Command (Direct UART) ---")
         print(f'blhost -p "{uart_port}" receive-sb-file "{output_sb3.name}"')
 
+        print("\n--- [Signed BIN] C++ blhost.exe 2.6.7 Commands (BusPal CAN via COM3) ---")
+        print(f'.\\blhost.exe -b can -p COM3 write-memory 0x{target_addr:08X} "{output_signed.name}"')
+        print(f'.\\blhost.exe -b can -p COM3 execute 0x{pc:08X} 0x{target_addr:08X} 0x{sp:08X}')
+
+        print("\n--- [Signed BIN] Ready-to-use SPSDK blhost Commands (Direct PCAN) ---")
+        print(f'blhost -cb "pcan,{pcan_channel}" write-memory 0x{target_addr:08X} "{output_signed.name}"')
+        print(f'blhost -cb "pcan,{pcan_channel}" execute 0x{pc:08X} 0x{target_addr:08X} 0x{sp:08X}')
+
+        print("\n--- [Signed BIN] Ready-to-use SPSDK blhost Commands (Direct UART) ---")
+        print(f'blhost -p "{uart_port}" write-memory 0x{target_addr:08X} "{output_signed.name}"')
+        print(f'blhost -p "{uart_port}" execute 0x{pc:08X} 0x{target_addr:08X} 0x{sp:08X}')
+
         try:
-            write_flash_bat(bat_path, output_sb3.name, target_addr, sp, pc, pcan_channel, mode="sb3")
+            write_flash_bat(bat_path, output_sb3.name, target_addr, sp, pc, pcan_channel, use_sb3=True)
             print("\n--- One-Click Windows Batch Script ---")
             print(f".\\{bat_path.name}")
         except OSError as exc:
             print(f"[ERROR] Could not write batch script: {exc}", file=sys.stderr)
             return 1
-        return 0
 
-    if use_mbi:
-        if auth_type == "signed" and not keys_path.is_dir():
-            print(f"[ERROR] Keys directory not found: {keys_path}", file=sys.stderr)
-            return 1
-        output_mbi = cwd / f"{stem}_mbi.bin"
-        mbi_data = generate_mbi_ram(
-            input_bin=input_path,
-            output_mbi=output_mbi,
-            base_addr=target_addr,
-            keys_dir=keys_path,
-            family=family,
-            auth_type=auth_type,
+        return generate_jlink_if_valid(
+            jlink_path, output_signed, target_addr, len(signed_data), sp, pc, thumb_bit
         )
-        target_image = output_mbi
-        target_bin_arg = output_mbi.name
-        file_size = len(mbi_data)
-        jlink_path = cwd / f"{stem}_mbi.jlink"
-        bat_path = cwd / f"{stem}_mbi_run.bat"
-        mode = "mbi"
-        print(f"\n[OK] MBI Mode Enabled ({family}, auth={auth_type})")
-        if auth_type == "signed":
-            print(f"[OK] Keys Directory     : {keys_path.resolve()}")
-        print(f"[OK] Generated MBI File : {output_mbi.name} ({file_size} bytes)")
-    else:
-        target_image = input_path
-        target_bin_arg = bin_path
-        jlink_path = cwd / f"{stem}.jlink"
-        bat_path = cwd / f"{stem}_run.bat"
-        mode = "raw"
+
+    jlink_path = cwd / f"{stem}.jlink"
+    bat_path = cwd / f"{stem}_run.bat"
 
     print("\n--- C++ blhost.exe 2.6.7 Commands (BusPal CAN via COM3) ---")
-    print(f'.\\blhost.exe -b can -p COM3 write-memory 0x{target_addr:08X} "{target_bin_arg}"')
+    print(f'.\\blhost.exe -b can -p COM3 write-memory 0x{target_addr:08X} "{bin_path}"')
     print(f'.\\blhost.exe -b can -p COM3 execute 0x{pc:08X} 0x{target_addr:08X} 0x{sp:08X}')
     print("[NOTE] SPSDK 3.1.0 supports BusPal SPI/I2C. For CAN, use the native CAN commands below.")
 
     print("\n--- Ready-to-use SPSDK blhost Commands (Direct PCAN) ---")
-    print(f'blhost -cb "pcan,{pcan_channel}" write-memory 0x{target_addr:08X} "{target_bin_arg}"')
+    print(f'blhost -cb "pcan,{pcan_channel}" write-memory 0x{target_addr:08X} "{bin_path}"')
     print(f'blhost -cb "pcan,{pcan_channel}" execute 0x{pc:08X} 0x{target_addr:08X} 0x{sp:08X}')
 
     print("\n--- Ready-to-use SPSDK blhost Commands (Direct UART) ---")
-    print(f'blhost -p "{uart_port}" write-memory 0x{target_addr:08X} "{target_bin_arg}"')
+    print(f'blhost -p "{uart_port}" write-memory 0x{target_addr:08X} "{bin_path}"')
     print(f'blhost -p "{uart_port}" execute 0x{pc:08X} 0x{target_addr:08X} 0x{sp:08X}')
 
     try:
-        write_flash_bat(bat_path, target_bin_arg, target_addr, sp, pc, pcan_channel, mode=mode)
+        write_flash_bat(bat_path, bin_path, target_addr, sp, pc, pcan_channel, use_sb3=False)
         print("\n--- One-Click Windows Batch Script ---")
         print(f".\\{bat_path.name}")
     except OSError as exc:
         print(f"[ERROR] Could not write batch script: {exc}", file=sys.stderr)
         return 1
 
-    if not 0x30005000 <= target_addr < 0x30010000:
-        print("\n[NOTE] J-Link command files are generated for KW45 Secure RAM images.")
-        return 0
-
-    image_end = target_addr + file_size
-    if image_end > 0x30010000 or target_addr % 0x400:
-        print("[ERROR] J-Link requires an aligned image within the KW45 Secure RAM image area.", file=sys.stderr)
-        return 1
-    if not thumb_bit or not target_addr <= (pc & ~1) < image_end:
-        print("[ERROR] Reset_Handler must be a Thumb entry in the image.", file=sys.stderr)
-        return 1
-    if sp % 8 or not 0x30010000 < sp <= 0x3001C000:
-        print("[ERROR] Initial MSP must be aligned and in the KW45 Secure RAM stack area.", file=sys.stderr)
-        return 1
-
-    try:
-        write_ram_command_file(jlink_path, target_image, target_addr, sp, pc)
-    except (OSError, ValueError) as exc:
-        print(f"[ERROR] Could not write J-Link command file: {exc}", file=sys.stderr)
-        return 1
-
-    print("\n--- Ready-to-use J-Link Commander Command ---")
-    print(f'JLink.exe ".\\{jlink_path.name}"')
-    return 0
+    return generate_jlink_if_valid(
+        jlink_path, input_path, target_addr, file_size, sp, pc, thumb_bit
+    )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Unified KW45 RAM boot tool: raw BIN (default), MBI (--mbi), or SB3.1 (--sb3)."
+        description="Unified KW45 RAM boot tool: raw BIN (default) or signed BIN + SB3.1 (--sb3)."
     )
     parser.add_argument(
         "bin_file",
@@ -386,36 +391,24 @@ def main() -> None:
         "-a",
         "--addr",
         default=None,
-        help="Optional RAM load address (e.g. 0x30008000). Auto-detected from PC if omitted.",
+        help="Optional RAM load address (e.g. 0x30005000). Auto-detected from PC if omitted.",
     )
-    mode_group = parser.add_mutually_exclusive_group()
-    mode_group.add_argument(
-        "--mbi",
-        action="store_true",
-        help="Package the input RAM binary into NXP MBI format (*_mbi.bin, default signed for Secure Boot J-Link).",
-    )
-    mode_group.add_argument(
+    parser.add_argument(
         "--sb3",
         action="store_true",
-        help="Package the input RAM binary into signed/encrypted SB3.1 (*.sb3) using keys/.",
+        help="Generate signed BIN (*_signed.bin + *_signed.jlink) and signed/encrypted SB3.1 (*.sb3 + *_sb3_run.bat).",
     )
     parser.add_argument(
         "-f",
         "--family",
         default="kw45b41z8",
-        help="MCU family for --mbi / --sb3 (default: kw45b41z8).",
-    )
-    parser.add_argument(
-        "--auth",
-        choices=["signed", "plain", "crc"],
-        default="signed",
-        help="MBI authentication type when --mbi is set (default: signed).",
+        help="MCU family for --sb3 (default: kw45b41z8).",
     )
     parser.add_argument(
         "-k",
         "--keys-dir",
         default=str(DEFAULT_KEYS_DIR),
-        help=f"Directory containing KW45 keys for --mbi/--sb3 (default: {DEFAULT_KEYS_DIR}).",
+        help=f"Directory containing KW45 keys for --sb3 (default: {DEFAULT_KEYS_DIR}).",
     )
     parser.add_argument(
         "-c",
@@ -434,10 +427,8 @@ def main() -> None:
         process_ram_image(
             bin_path=args.bin_file,
             load_addr=args.addr,
-            use_mbi=args.mbi,
             use_sb3=args.sb3,
             family=args.family,
-            auth_type=args.auth,
             keys_dir=args.keys_dir,
             pcan_channel=args.channel,
             uart_port=args.uart_port,

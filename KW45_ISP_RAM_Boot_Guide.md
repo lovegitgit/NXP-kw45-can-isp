@@ -10,14 +10,11 @@
 # 原始 RAM BIN 模式
 python .\make-ram-boot.py .\freertos_hello.bin
 
-# 签名 MBI 模式（Secure Boot 下配合 Debug Auth 通过 J-Link 下载到 RAM）
-python .\make-ram-boot.py .\freertos_hello.bin --mbi
-
-# SB3.1 安全容器一步生成模式
+# 签名 BIN + 签名 SB3.1 安全容器一步生成模式（同时生成 *_signed.bin、*_signed.jlink、*.sb3 与 *_sb3_run.bat）
 python .\make-ram-boot.py .\freertos_hello.bin --sb3
 ```
 
-脚本会输出对应的 ISP 下载与启动命令，在当前目录生成 `.jlink` 与一键批处理 `*_run.bat`（`--sb3` 模式生成 `.sb3` 与 `*_sb3_run.bat`）。
+脚本会输出对应的 ISP 与 J-Link 下载启动命令，在当前目录生成 `.jlink` 与一键批处理 `*_run.bat`（`--sb3` 模式同时生成签名 `*_signed.bin`、`*_signed.jlink`、`.sb3` 与 `*_sb3_run.bat`）。
 
 | 启动参数 | 来源 |
 | :--- | :--- |
